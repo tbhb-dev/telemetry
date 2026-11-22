@@ -43,6 +43,15 @@ repo_files(
 # .bazelversion, and `preset.update_test` fails when it is stale.
 bazelrc_preset(
     name = "preset",
+    extra_presets = {
+        "experimental_check_external_repository_files": {
+            "default": False,
+            "description": """\
+Speed up all builds by not checking if external repository files have been modified.
+For reference: the Bazel source for RepositoryOptions (experimental_check_external_repository_files).
+""",
+        },
+    },
 )
 
 # buildifier: `//:buildifier` formats and applies lint fixes in place,
@@ -240,7 +249,7 @@ bazel_env(
         "cog": "@tbhb_rules_cog//:cog",
         "cspell": "@tbhb_rules//lint/private/cspell",
         "editorconfig-checker": "@tbhb_rules_editorconfig_checker//:editorconfig-checker",
-        "gitleaks": "@tbhb_rules_gitleaks//:gitleaks",
+        "gitleaks": "@tbhb_rules//lint:gitleaks",
         "rumdl": "@tbhb_rules_rumdl//:rumdl",
         "ryl": "@tbhb_rules_ryl//:ryl",
         "shellcheck": "@tbhb_rules_shellcheck//:shellcheck",

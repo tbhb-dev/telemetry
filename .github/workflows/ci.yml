@@ -41,7 +41,7 @@ jobs:
 
       # Sets up Bazel and its caches, then fetches the shared gate tools.
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@ee2995544501ca1baa6f2d091541b759b9ce55ea  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@b02ce66383eefb1f57de6570aeeeec76917468bb  # main
         with:
           disk-cache: ${{ github.workflow }}-ubuntu-24.04
           cache-save: ${{ github.event_name != 'pull_request' }}
@@ -70,7 +70,8 @@ jobs:
     name: repo
     permissions:
       contents: read
-    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@ee2995544501ca1baa6f2d091541b759b9ce55ea  # main
+      pull-requests: read  # Lowest open PR, for the bootstrap size exemption.
+    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@b02ce66383eefb1f57de6570aeeeec76917468bb  # main
     with:
       runs-on: ubuntu-24.04
       timeout-minutes: 10
@@ -88,6 +89,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Fail if any needed job did not succeed
-        uses: tbhb-dev/rules/.github/actions/ci-conclusion@ee2995544501ca1baa6f2d091541b759b9ce55ea  # main
+        uses: tbhb-dev/rules/.github/actions/ci-conclusion@b02ce66383eefb1f57de6570aeeeec76917468bb  # main
         with:
           needs: ${{ toJSON(needs) }}
