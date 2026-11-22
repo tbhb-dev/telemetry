@@ -1,0 +1,7 @@
+Bazel
+[Ff]rontmatter
+gitleaks
+prek
+telemetry
+tbhbdev
+worktrees?
