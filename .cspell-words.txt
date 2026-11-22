@@ -134,6 +134,7 @@ tolower
 tombi
 tonumber
 tricolon
+tracestate
 tskey
 uncomparables
 unexecutable

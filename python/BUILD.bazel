@@ -1,0 +1,26 @@
+load("@python_deps//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@tbhb_rules//repo:defs.bzl", "repo_files")
+
+repo_files()
+
+py_library(
+    name = "tbhb_telemetry",
+    srcs = ["tbhb_telemetry/__init__.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("opentelemetry-sdk"),
+        requirement("opentelemetry-exporter-otlp-proto-http"),
+    ],
+)
+
+py_test(
+    name = "telemetry_test",
+    srcs = [
+        "tbhb_telemetry/receiver.py",
+        "tbhb_telemetry/telemetry_test.py",
+    ],
+    main = "tbhb_telemetry/telemetry_test.py",
+    deps = [":tbhb_telemetry"],
+)

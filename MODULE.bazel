@@ -2,6 +2,19 @@
 
 module(name = "tbhb_dev_telemetry")
 
+bazel_dep(name = "rules_python", version = "2.5.1")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "python_deps",
+    python_version = "3.12",
+    requirements_lock = "//python:requirements.lock",
+)
+use_repo(pip, "python_deps")
+
 # Shared gate rules. Not on the BCR, so they come from Git, pinned to a
 # commit on rules' main. To build against a local clone, put
 # `common --override_module=tbhb_rules=/path/to/rules` in .bazelrc.user.
