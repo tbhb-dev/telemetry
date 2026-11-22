@@ -209,7 +209,7 @@ def command(name, *, version, main):
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
         error = exc if code else None
-        return code
+        raise
     except BaseException as exc:
         code, error = 1, exc
         raise
