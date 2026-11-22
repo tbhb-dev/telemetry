@@ -1,0 +1,93 @@
+---
+# Main quality gate. Bazel pins the tools and owns the gates: the hermetic
+# checks are cached `bazel test` targets, so `bazel test //...` runs them
+# all, and the few that need the network, Git history or the GitHub API run
+# as their own steps after it. A final `conclusion` job gives branch
+# protection one stable required check.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+# A lockfile only binds a version it has already seen: moving a pin in
+# mise.toml while leaving mise.lock alone would make mise fetch the new
+# version and rewrite the lockfile in place. MISE_LOCKED makes that a hard
+# failure instead.
+env:
+  MISE_LOCKED: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Run the shared scaffold gates on a hosted Linux runner.
+  bazel:
+    name: bazel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Sets up Bazel and its caches, then fetches the shared gate tools.
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@ee2995544501ca1baa6f2d091541b759b9ce55ea  # main
+        with:
+          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+          cache-save: ${{ github.event_name != 'pull_request' }}
+
+      # //... covers the @tbhb_rules lint, format, shell and docs tests over
+      # the whole tree, the buildifier_test, and the preset.update_test that
+      # fails when preset.bazelrc is stale.
+      - name: Test
+        run: bazelisk test --config=ci //...
+
+      # A failed run's test logs, so a failure that does not recur can still
+      # be read.
+      - name: Keep the test logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: testlogs
+          path: |
+            .bazel-testlogs/**/test.log
+            .bazel-testlogs/**/test.xml
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  # Repository checks need history, the network and the GitHub API.
+  repo:
+    name: repo
+    permissions:
+      contents: read
+    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@ee2995544501ca1baa6f2d091541b759b9ce55ea  # main
+    with:
+      runs-on: ubuntu-24.04
+      timeout-minutes: 10
+      pip-audit-target: ""
+      module-dirs: .
+
+  # One stable required check for branch protection. `if: always()` runs it
+  # even when a needed job failed; the shared action passes only when every
+  # needed job's result is exactly "success".
+  conclusion:
+    name: conclusion
+    if: always()
+    needs: [bazel, repo]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any needed job did not succeed
+        uses: tbhb-dev/rules/.github/actions/ci-conclusion@ee2995544501ca1baa6f2d091541b759b9ce55ea  # main
+        with:
+          needs: ${{ toJSON(needs) }}
