@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
@@ -30,16 +31,35 @@ def _quiet(function):
 @_quiet
 def _counter(delta=0, reason=None):
     import fcntl
-    directory = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local/state")) / "tbhb/telemetry"
+    directory = Path(os.getenv("XDG_STATE_HOME") or Path.home() / ".local/state") / "tbhb/telemetry"
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / "drops.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        deadline = time.monotonic() + 0.02
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                time.sleep(min(0.002, remaining))
         file = directory / "drops.count"
-        count = int(file.read_text()) if file.exists() else 0
+        try:
+            count = int(file.read_text())
+        except (FileNotFoundError, ValueError):
+            count = 0
         if reason:
             with (directory / "drops.jsonl").open("a") as log:
                 log.write(json.dumps(dict(timestamp=time.time(), count=delta, reason=reason)) + "\n")
-        file.write_text(str(max(0, count + delta)))
+        with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
+            path = Path(temporary.name)
+            try:
+                temporary.write(str(max(0, count + delta)))
+                temporary.close()
+                os.replace(path, file)
+            finally:
+                path.unlink(missing_ok=True)
         return count
 
 
@@ -59,14 +79,15 @@ class _Pending:
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.sampling import ALWAYS_ON
             from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-            self.provider = TracerProvider(resource=Resource.create({
+            self.provider = TracerProvider(resource=Resource({
                 "service.name": self.attributes["service.name"],
                 "service.version": self.attributes["service.version"]}),
                 sampler=ALWAYS_ON, shutdown_on_exit=False)
             self.provider.add_span_processor(self)
             self.tracer = self.provider.get_tracer("tbhb_telemetry")
             self.root = self.tracer.start_span(self.name, attributes=self.attributes,
-                context=TraceContextTextMapPropagator().extract(self.inbound), start_time=self.start)
+                context=TraceContextTextMapPropagator().extract(self.inbound), start_time=self.start,
+                record_exception=False, set_status_on_exception=False)
             self.token = context.attach(trace.set_span_in_context(self.root))
         return self.root.get_span_context()
 
@@ -140,6 +161,7 @@ class _Tracer:
         try:
             if _state:
                 _state.materialize()
+                kwargs.update(record_exception=False, set_status_on_exception=False)
                 return _state.tracer.start_span(*args, **kwargs)
         except Exception:
             pass
@@ -149,7 +171,8 @@ class _Tracer:
     def start_as_current_span(self, *args, **kwargs):
         from opentelemetry import trace
         end = kwargs.pop("end_on_exit", True)
-        with trace.use_span(self.start_span(*args, **kwargs), end_on_exit=end) as span:
+        with trace.use_span(self.start_span(*args, **kwargs), end_on_exit=end,
+                            record_exception=False, set_status_on_exception=False) as span:
             yield span
 
 
@@ -209,7 +232,7 @@ def command(name, *, version, main):
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
         error = exc if code else None
-        return code
+        raise
     except BaseException as exc:
         code, error = 1, exc
         raise

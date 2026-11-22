@@ -1,6 +1,7 @@
 """Behavior and timing checks against real OTLP HTTP transport."""
 
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -64,10 +65,13 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(root.status.code, 2)
 
     def test_exits_and_exception(self):
-        for value, expected in [(None, 0), (9, 9), ("message", 1)]:
+        for value in (None, 9, "message"):
+            original = SystemExit(value)
             def main():
-                raise SystemExit(value)
-            self.assertEqual(self.run_command(main), expected)
+                raise original
+            with self.assertRaises(SystemExit) as caught:
+                self.run_command(main)
+            self.assertIs(caught.exception, original)
         with self.assertRaisesRegex(ValueError, "original"):
             self.run_command(lambda: (_ for _ in ()).throw(ValueError("original")))
         root = self.receiver.spans()[-1]
@@ -76,6 +80,111 @@ class TelemetryTest(unittest.TestCase):
         os.environ["TRACEPARENT"] = os.environ["TRACEPARENT"][:-2] + "00"
         self.run_command()
         self.assertEqual(len(self.receiver.spans()), 5)
+
+    def test_exit_process_equivalence(self):
+        for value in (None, 2, "msg", "fatal: bad thing"):
+            main = 'def main():\n    print("command")\n    sys.exit(%r)\n' % value
+            baseline = subprocess.run([sys.executable, "-c", "import sys\n" + main + "main()"],
+                capture_output=True, timeout=3)
+            expected = (0 if value is None else 2 if value == 2 else 1,
+                        b"command\n", (value + "\n").encode() if isinstance(value, str) else b"")
+            self.assertEqual((baseline.returncode, baseline.stdout, baseline.stderr), expected)
+            for disabled in ("false", "true"):
+                with self.subTest(value=value, disabled=disabled):
+                    before = len(self.receiver.spans())
+                    result = subprocess.run([sys.executable, "-c",
+                        "import sys\nfrom tbhb_telemetry import command\n" + main +
+                        'sys.exit(command("sample", version="1", main=main))'],
+                        env={**os.environ, "OTEL_SDK_DISABLED": disabled}, capture_output=True, timeout=3)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), expected)
+                    self.assertEqual(len(self.receiver.spans()), before + (disabled == "false"))
+                    if disabled == "false":
+                        attrs = {a.key: a.value for a in self.receiver.spans()[-1].attributes}
+                        self.assertEqual(attrs["process.exit.code"].int_value, expected[0])
+                        if expected[0]:
+                            self.assertEqual(attrs["error.type"].string_value, "SystemExit")
+
+    def test_exception_message_stays_out_of_spans(self):
+        marker = "private-exception-marker"
+        def main():
+            tracer = trace.get_tracer("test")
+            for start in (tracer.start_span, tracer.start_as_current_span):
+                with self.assertRaises(ValueError):
+                    with start("child", record_exception=True, set_status_on_exception=True):
+                        raise ValueError(marker)
+            raise ValueError(marker)
+        with self.assertRaisesRegex(ValueError, marker):
+            self.run_command(main)
+        spans = self.receiver.spans()
+        self.assertEqual(len(spans), 3)
+        for batch in self.receiver.batches:
+            self.assertNotIn(marker.encode(), batch.SerializeToString())
+        for child in spans[:-1]:
+            self.assertEqual(len(child.events), 0)
+            self.assertEqual(child.status.code, 0)
+        self.assertEqual(next(a.value.string_value for a in spans[-1].attributes
+                              if a.key == "error.type"), "ValueError")
+
+    def test_resource_has_only_service_attributes(self):
+        with patch.dict(os.environ, {"OTEL_RESOURCE_ATTRIBUTES": "private.marker=hidden,service.name=override",
+                                     "OTEL_SERVICE_NAME": "override"}):
+            self.run_command()
+        resource = self.receiver.batches[-1].resource_spans[0].resource
+        self.assertEqual({a.key: a.value.string_value for a in resource.attributes},
+                         {"service.name": "sample", "service.version": "1.2.3"})
+
+    def test_held_drop_lock_is_bounded(self):
+        self.run_command()  # Warm SDK imports before measuring lock overhead.
+        with (self.drops() / "drops.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            start = time.monotonic()
+            self.assertEqual(self.run_command(lambda: 5), 5)
+            self.assertLess(time.monotonic() - start, 0.1)
+        self.assertEqual(len(self.receiver.spans()), 2)
+
+    def test_corrupt_drop_count_recovers(self):
+        self.drops().mkdir(parents=True)
+        file = self.drops() / "drops.count"
+        for corrupt in ("", "corrupt"):
+            with self.subTest(corrupt=corrupt):
+                file.write_text(corrupt)
+                with patch.object(telemetry, "_export", side_effect=RuntimeError):
+                    self.assertEqual(self.run_command(), 0)
+                self.assertEqual(file.read_text(), "1")
+                self.run_command()
+                root = self.receiver.spans()[-1]
+                self.assertEqual(next(a.value.int_value for a in root.attributes
+                                      if a.key == "tbhb.export.dropped"), 1)
+                self.assertEqual(file.read_text(), "0")
+
+    def test_drop_count_replacement_is_atomic(self):
+        self.assertEqual(telemetry._counter(2), 0)
+        replace = os.replace
+        def check_replace(source, destination):
+            self.assertEqual(source.parent, self.drops())
+            self.assertEqual(destination, self.drops() / "drops.count")
+            self.assertEqual(destination.read_text(), "2")
+            self.assertEqual(source.read_text(), "5")
+            replace(source, destination)
+        with patch.object(telemetry.os, "replace", side_effect=check_replace) as replacement:
+            self.assertEqual(telemetry._counter(3), 2)
+            replacement.assert_called_once()
+        self.assertEqual((self.drops() / "drops.count").read_text(), "5")
+        self.assertEqual({p.name for p in self.drops().iterdir()}, {"drops.count", "drops.lock"})
+
+    def test_empty_state_home_uses_home(self):
+        working = Path(self.directory.name) / "working"
+        working.mkdir()
+        previous = Path.cwd()
+        try:
+            os.chdir(working)
+            with patch.dict(os.environ, {"XDG_STATE_HOME": "", "HOME": self.directory.name}):
+                self.assertEqual(self.run_command(), 0)
+            self.assertEqual(list(working.iterdir()), [])
+            self.assertEqual((Path(self.directory.name) /
+                              ".local/state/tbhb/telemetry/drops.count").read_text(), "0")
+        finally:
+            os.chdir(previous)
 
     def test_failures_and_recovery(self):
         self.run_command()  # Warm SDK imports before measuring transport overhead.
