@@ -13,16 +13,20 @@ defect that reached review in this repository.
   lookup.
 - Documented undo steps are run, not read. Unsetting only the allowlist while an
   off-host endpoint stays set drops spans, so the undo is to unset both.
-- Export stays bounded at 250 ms, fails silently and never changes a command's
-  exit code or output. Check Ctrl-C during the export wait and a malformed
-  `OTEL_*` variable.
+- Export stays bounded at 250 ms, fails silently and aims never to change a
+  command's exit code or output. A malformed endpoint passes that check. Known
+  open: Ctrl-C during the export wait replaces the exit status and prints a
+  traceback. A change must not widen that gap.
 - `OTEL_SDK_DISABLED=true` still stops all export and drop writes.
 
 ## Attributes and records
 
-- Attribute names stay under `tbhb.agent.*` and `tbhb.run.id`. Values are
-  strings of at most 128 characters, and outcome is `ok`, `refused` or `failed`.
-- Drop records and the locked counter keep a size bound.
+- `set_attributes` accepts only the `tbhb.agent.*` keys and `tbhb.run.id`.
+  Values are strings of at most 128 characters, and outcome is `ok`, `refused`
+  or `failed`. Spans also carry built-in attributes that this limit doesn't
+  cover.
+- Known open: `drops.jsonl` has no file size limit, so repeated refused exports
+  grow it. A change must not add new unbounded writes.
 
 ## Release and CI
 
@@ -31,13 +35,17 @@ defect that reached review in this repository.
 - Every action is pinned by full commit sha, and downloaded tools by checksum.
 - The smoke test installs the built wheel into a fresh environment and proves a
   real export, not just an import.
-- A rerun of the release job for the same sha neither duplicates nor silently
-  accepts a release with different bytes.
-- The wheel's name, URL pattern and hash sidecar still match what consumers pin.
+- A rerun of the release job for the same sha doesn't duplicate the release.
+  Known open until the follow-up lands: a rerun checks asset names only, not
+  the wheel or sidecar bytes.
+- The wheel's name, URL pattern and hash sidecar still match the README
+  contract that consumers pin.
+- Known open: the CI setup action can download Bazelisk without a checksum
+  check (security debt).
 
 ## Public repository
 
 - No secret, host name, private repository name, internal path, network name or
   address appears in any file, commit or PR text.
-- A change that touches `.github/actionlint.yaml` stays a byte copy of the rules
-  baseline.
+- A change to `.github/actionlint.yaml` is a byte copy of the rules baseline at
+  the commit pinned in `MODULE.bazel`.
