@@ -23,8 +23,11 @@ permissions:
 env:
   MISE_LOCKED: "1"
 
+# A pull request's newer push cancels its older run. Every push to main is its
+# own group, so a queued run is never replaced by a later merge: each merge
+# keeps its run, and its release.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -93,13 +96,13 @@ jobs:
         with:
           needs: ${{ toJSON(needs) }}
 
-  # The release build, only for a push to main whose `conclusion` passed. It
-  # builds the wheel, installs it in a fresh environment with its pinned
-  # dependencies, and runs a one-span smoke test before anything is
+  # The release build, only for a push to main whose `conclusion` passed, and
+  # not in a fork. It builds the wheel, installs it in a fresh environment with
+  # its pinned dependencies, and runs a smoke test before anything is
   # published. It holds no write access.
   wheel:
     name: wheel
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.repository == 'tbhb-dev/telemetry'
     needs: [conclusion]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -131,18 +134,23 @@ jobs:
           uv build --wheel --out-dir dist python
           (cd dist && sha256sum tbhb_telemetry-0-py3-none-any.whl >tbhb_telemetry-0-py3-none-any.whl.sha256)
 
-      # Port 1 has no listener, so the export fails at once. A failed export
-      # must not fail the command or slow it down: the script exits non-zero
-      # on a wrong exit code or more than two seconds, and `timeout` fails
-      # the step if the process hangs.
+      # Two checks in one process. Port 1 has no listener, so the export fails
+      # at once: a failed export must not fail the command or slow it down.
+      # Then a local collector must receive exactly one non-empty POST to
+      # /v1/traces, so the span was created and an export was attempted. The
+      # script exits non-zero on a wrong exit code, a miss or more than two
+      # seconds, and `timeout` fails the step if the process hangs.
+      # cspell:ignore rfile
       - name: Smoke-test the built wheel
         run: |
           uv venv --python 3.12 "$RUNNER_TEMP/smoke"
           uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/tbhb_telemetry-0-py3-none-any.whl
           export XDG_STATE_HOME="$RUNNER_TEMP/smoke-state"
-          export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:1
           timeout 30 "$RUNNER_TEMP/smoke/bin/python" -I - <<'PY'
+          import os
+          import threading
           import time
+          from http.server import BaseHTTPRequestHandler, HTTPServer
 
           from tbhb_telemetry import command, materialize
 
@@ -152,12 +160,44 @@ jobs:
               return 0
 
 
-          start = time.monotonic()
-          code = command("smoke", version="0", main=main)
-          elapsed = time.monotonic() - start
-          print("exit", code, "elapsed", round(elapsed, 3))
-          assert code == 0
-          assert elapsed < 2
+          def run(label):
+              start = time.monotonic()
+              code = command("smoke", version="0", main=main)
+              elapsed = time.monotonic() - start
+              print(label, "exit", code, "elapsed", round(elapsed, 3))
+              assert code == 0
+              assert elapsed < 2
+
+
+          os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:1"
+          run("closed port")
+
+          posts = []
+
+
+          class Collector(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                  posts.append((self.path, len(body)))
+                  self.send_response(200)
+                  self.send_header("Content-Length", "0")
+                  self.end_headers()
+
+              def log_message(self, *args):
+                  pass
+
+
+          server = HTTPServer(("127.0.0.1", 0), Collector)
+          threading.Thread(target=server.serve_forever, daemon=True).start()
+          os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:%d" % server.server_port
+          try:
+              run("collector")
+          finally:
+              server.shutdown()
+          print("posts", posts)
+          assert len(posts) == 1
+          assert posts[0][0] == "/v1/traces"
+          assert posts[0][1] > 0
           PY
 
       - name: Keep the wheel
@@ -168,7 +208,11 @@ jobs:
           if-no-files-found: error
 
   # The only job with write access: one GitHub release per merge, tagged
-  # `sha-<12 hex>` and marked latest, with the wheel and its sha256 sidecar.
+  # `sha-<12 hex>`, with the wheel and its sha256 sidecar. Runs for different
+  # merges can finish in any order, so no release is marked latest. The release
+  # is created as a draft with both files and published last, so a rerun after
+  # an interrupted run finds either nothing, a draft to finish, or a published
+  # release to verify.
   release:
     name: release
     needs: [wheel]
@@ -189,10 +233,41 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
           tag="sha-${SHA:0:12}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release $tag exists"
+          wheel=tbhb_telemetry-0-py3-none-any.whl
+          sidecar="$wheel.sha256"
+          # `gh release view` does not reliably see drafts; the list does.
+          found=$(gh api --paginate "repos/$GH_REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\") | {draft, target: .target_commitish, assets: [.assets[].name]}" \
+            | jq --slurp '.')
+          count=$(jq 'length' <<<"$found")
+          if [ "$count" -eq 0 ]; then
+            gh release create "$tag" "dist/$wheel" "dist/$sidecar" --draft --target "$SHA" \
+              --title "$tag" --notes "Merge of $SHA on main."
+            gh release edit "$tag" --draft=false
             exit 0
           fi
-          gh release create "$tag" dist/* --target "$SHA" --latest \
-            --title "$tag" --notes "Merge of $SHA on main."
+          if [ "$count" -ne 1 ]; then
+            echo "::error::found $count releases for $tag"
+            exit 1
+          fi
+          target=$(jq --raw-output '.[0].target' <<<"$found")
+          if [ "$target" != "$SHA" ]; then
+            echo "::error::release $tag targets $target, not $SHA"
+            exit 1
+          fi
+          draft=$(jq '.[0].draft' <<<"$found")
+          if [ "$draft" = true ]; then
+            echo "release $tag is an unpublished draft: finishing it"
+            gh release upload "$tag" "dist/$wheel" "dist/$sidecar" --clobber
+            gh release edit "$tag" --draft=false
+            exit 0
+          fi
+          for name in "$wheel" "$sidecar"; do
+            if ! jq --exit-status --arg name "$name" '.[0].assets | index($name)' <<<"$found" >/dev/null; then
+              echo "::error::published release $tag has no asset $name"
+              exit 1
+            fi
+          done
+          echo "release $tag is published, targets $SHA and has both files"
