@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from textwrap import dedent
 import threading
 import time
 import unittest
@@ -217,6 +218,44 @@ class TelemetryTest(unittest.TestCase):
         self.assertLess(elapsed, 0.35)
         lines = (self.drops() / "drops.jsonl").read_text().splitlines()
         self.assertEqual((len(lines), json.loads(lines[0])["count"]), (1, 1))
+
+    def test_sigint_during_export_wait_preserves_exit(self):
+        telemetry._counter(2)
+        script = dedent("""\
+            import signal
+            import sys
+            import threading
+            from unittest.mock import patch
+            import tbhb_telemetry as telemetry
+
+            waiting, release = threading.Event(), threading.Event()
+            wait = threading.Event.wait
+            main_thread = threading.get_ident()
+
+            def stalled_export(*args):
+                waiting.wait()
+                signal.pthread_kill(main_thread, signal.SIGINT)  # cspell:ignore pthread
+                release.wait()
+
+            def wait_for_export(event, timeout=None):
+                if timeout == 0.25:
+                    waiting.set()
+                return wait(event, timeout)
+
+            def main():
+                print("command output")
+                return 7
+
+            with (
+                patch.object(telemetry, "_export", stalled_export),
+                patch.object(threading.Event, "wait", wait_for_export),
+            ):
+                sys.exit(telemetry.command("sample", version="1", main=main))
+            """)
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=3)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (7, b"command output\n", b""))
+        self.assertEqual((self.drops() / "drops.count").read_text(), "2")
+        self.assertFalse((self.drops() / "drops.jsonl").exists())
 
     def test_endpoint_exporter_disabled_and_capacity(self):
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector.example:4318"

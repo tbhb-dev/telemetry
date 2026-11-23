@@ -137,7 +137,11 @@ class _Pending:
             finally:
                 done.set()
         threading.Thread(target=send, daemon=True).start()
-        if not done.wait(0.25):
+        try:
+            completed = done.wait(0.25)
+        except KeyboardInterrupt:
+            return
+        if not completed:
             _counter(len(self.spans), "timeout")
         elif not result[0]:
             _counter(len(self.spans), "export")
