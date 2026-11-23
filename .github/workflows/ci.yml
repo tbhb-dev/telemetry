@@ -34,7 +34,7 @@ jobs:
   # Run the shared scaffold gates on a hosted Linux runner.
   bazel:
     name: bazel
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -88,7 +88,7 @@ jobs:
     name: conclusion
     if: always()
     needs: [bazel, repo]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Fail if any needed job did not succeed
@@ -104,7 +104,7 @@ jobs:
     name: wheel
     if: github.event_name == 'push' && github.repository == 'tbhb-dev/telemetry'
     needs: [conclusion]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -217,7 +217,7 @@ jobs:
   release:
     name: release
     needs: [wheel]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write  # Create the release and attach the files.
