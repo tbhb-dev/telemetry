@@ -3,6 +3,14 @@
 This repository holds tbhb-dev's shared telemetry libraries. Licensed under
 Apache-2.0.
 
+## Dashboard
+
+[Agents (live)](dashboards/agents-live.json) reads per-launch spans named
+`tbhbdev alpha agent exec` from the Tempo data source (UID `tempo`). It lists
+launches with host, harness, model, profile, outcome, run ID, and duration, and
+charts launch counts by outcome and by host. Import it through the Grafana API
+or UI. The dashboard stays empty until a launcher exports spans.
+
 ## Python
 
 The `//python:tbhb_telemetry` Bazel library wraps a synchronous command-line tool:
