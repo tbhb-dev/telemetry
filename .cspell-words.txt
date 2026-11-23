@@ -111,6 +111,7 @@ selftest
 shellcheck
 shfmt
 slurpfile
+spss
 srcs
 stampable
 starlark
@@ -133,6 +134,7 @@ tojson
 tolower
 tombi
 tonumber
+traceql
 tricolon
 tracestate
 tskey
