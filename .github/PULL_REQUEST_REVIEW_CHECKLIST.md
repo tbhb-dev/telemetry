@@ -14,9 +14,13 @@ defect that reached review in this repository.
 - Documented undo steps are run, not read. Unsetting only the allowlist while an
   off-host endpoint stays set drops spans, so the undo is to unset both.
 - Export stays bounded at 250 ms, fails silently and aims never to change a
-  command's exit code or output. A malformed endpoint passes that check. Known
-  open: Ctrl-C during the export wait replaces the exit status and prints a
-  traceback. A change must not widen that gap.
+  command's exit code or output. A malformed endpoint passes that check. A
+  Ctrl-C during the export wait keeps the command's exit status and output:
+  `finish()` in `python/tbhb_telemetry/__init__.py` catches `KeyboardInterrupt`
+  around that wait. An interrupt elsewhere in `finish()`, for example in
+  `materialize()` before the protected wait, can still replace the exit status,
+  because `command()` catches only `Exception`. A change must not widen that
+  unprotected part of `finish()`.
 - `OTEL_SDK_DISABLED=true` still stops all export and drop writes.
 
 ## Attributes and records
