@@ -43,7 +43,9 @@ Decided 2026-11-22 by the telemetry owner.
   this repository, its commits and its pull requests.
 - Where no loopback collector runs, the operator sets both variables. Plain
   `http` inside the private network is accepted and tracked as security debt.
-- To undo: remove the allowlist variable and spans go back to loopback only.
+- To undo, unset both variables. Unsetting only the allowlist while the endpoint
+  still names another host drops the spans.
+
 The package buffers 512 spans and waits up to 250 ms for its single export
 attempt. Drop records and the locked counter live under
 `$XDG_STATE_HOME/tbhb/telemetry` (default `~/.local/state`).
