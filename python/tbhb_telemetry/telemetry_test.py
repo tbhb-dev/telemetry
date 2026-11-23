@@ -2,6 +2,7 @@
 
 import contextlib
 import fcntl
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
@@ -241,22 +242,45 @@ class TelemetryTest(unittest.TestCase):
     def test_endpoint_allowlist(self):
         entries = ["collector%d.example" % index for index in range(9)]
         longest = "a" * 245 + ".example"
+        capped = "collector.example".ljust(4096)
+        getaddrinfo = socket.getaddrinfo
+        def resolve(host, port, *args, **kwargs):
+            return getaddrinfo("127.0.0.1", self.receiver.server.server_port, *args, **kwargs)
+        def main():
+            print("command output")
+            print("command error", file=sys.stderr)
+            return 7
         for allowlist, host, allowed in (
             (None, "collector.example", False),
             ("", "collector.example", False),
+            (" \t ", "collector.example", False),
+            (",,,", "collector.example", False),
             ("collector.example", "collector.example", True),
             ("other.example", "collector.example", False),
             ("COLLECTOR.EXAMPLE", "collector.example", True),
             ("collector.example", "COLLECTOR.EXAMPLE", True),
             (" , , collector.example, , ", "collector.example", True),
             ("*", "collector.example", False),
-            (".example.net", "collector.example.net", False),
+            (".example", "collector.example", False),
             ("collector.example", "other.collector.example", False),
+            ("collector.example", "collector.example.", False),
+            ("collector.example:4318", "collector.example", False),
+            ("collector.example", "collector.example@other.collector.example", False),
+            ("other.collector.example", "collector.example@other.collector.example", True),
+            (None, "192.0.2.1", False),
+            ("192.0.2.1", "192.0.2.1", True),
+            ("192.0.2.10", "192.0.2.1", False),
+            (None, "[2001:db8::1]", False),
+            ("2001:db8::1", "[2001:db8::1]", True),
+            ("2001:db8:0:0:0:0:0:1", "[2001:db8::1]", False),
             (",".join(entries), entries[7], True),
             (",".join(entries), entries[8], False),
             (longest, longest, True),
             ("a" + longest, "a" + longest, False),
             ("a" * 254 + ",collector.example", "collector.example", True),
+            (capped, "collector.example", True),
+            (capped + " ", "collector.example", False),
+            (capped + " ", "localhost", True),
             ("other.example", "localhost", True),
         ):
             with self.subTest(allowlist=allowlist, host=host):
@@ -266,15 +290,84 @@ class TelemetryTest(unittest.TestCase):
                     os.environ["TBHB_TELEMETRY_ALLOW_HOSTS"] = allowlist
                 endpoint = "http://%s:4318" % host
                 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
-                with patch.object(telemetry, "_export") as export:
-                    self.assertEqual(self.run_command(lambda: 7), 7)
+                before = len(self.receiver.spans())
+                output, errors = io.StringIO(), io.StringIO()
+                with patch.object(socket, "getaddrinfo", side_effect=resolve) as lookup, \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    self.assertEqual(self.run_command(main), 7)
+                    self.assertEqual((output.getvalue(), errors.getvalue()),
+                                     ("command output\n", "command error\n"))
                     if allowed:
-                        export.assert_called_once_with(unittest.mock.ANY, endpoint)
-                        self.assertEqual(len(export.call_args.args[0]), 1)
+                        lookup.assert_called_once_with(telemetry.urlsplit(endpoint).hostname, 4318, 0, socket.SOCK_STREAM)
+                        self.assertEqual(len(self.receiver.spans()), before + 1)
                     else:
-                        export.assert_not_called()
+                        lookup.assert_not_called()
+                        self.assertEqual(len(self.receiver.spans()), before)
                         record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
                         self.assertEqual((record["reason"], record["count"]), ("endpoint", 1))
+
+    def export_to_loopback(self, host, family):
+        requests = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                requests.append((self.command, self.path))
+                self.send_response(200)
+                self.end_headers()
+            def log_message(self, *args):
+                pass
+        class Server(ThreadingHTTPServer):
+            address_family = family
+        try:
+            server = Server((host, 0), Handler)
+        except OSError as error:
+            if family == socket.AF_INET6:
+                self.skipTest("IPv6 loopback ::1 cannot be bound: %s" % error)
+            raise
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            authority = "[%s]" % host if family == socket.AF_INET6 else host
+            telemetry._export([], "http://%s:%d/" % (authority, server.server_port))
+            self.assertEqual(requests, [("POST", "/v1/traces")])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_export_ipv6_loopback(self):
+        self.export_to_loopback("::1", socket.AF_INET6)
+
+    def test_export_ipv4_loopback(self):
+        self.export_to_loopback("127.0.0.1", socket.AF_INET)
+
+    def test_export_default_ports(self):
+        for scheme, host, port, constructor in (
+            ("http", "2001:db8::1", 80, "HTTPConnection"),
+            ("https", "fd00::1:10", 443, "HTTPSConnection"),
+        ):
+            with self.subTest(scheme=scheme), patch.object(telemetry.http.client, constructor) as connection:
+                connection.return_value.getresponse.return_value.status = 200
+                telemetry._export([], "%s://[%s]/" % (scheme, host))
+                connection.assert_called_once_with(host, port, timeout=0.25)
+
+    def test_endpoint_paths_preserve_process_output_and_exit(self):
+        script = ('import sys\ndef main():\n    print("command output")\n'
+                  '    print("command error", file=sys.stderr)\n    return 7\n')
+        baseline = subprocess.run([sys.executable, "-c", script + "sys.exit(main())"],
+                                  capture_output=True, timeout=3)
+        for endpoint, allowed in (("http://collector.example", False), (self.receiver.endpoint, True)):
+            with self.subTest(allowed=allowed):
+                before = len(self.receiver.spans())
+                result = subprocess.run([sys.executable, "-c", script +
+                    'from tbhb_telemetry import command\nsys.exit(command("sample", version="1", main=main))'],
+                    env={**os.environ, "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint}, capture_output=True, timeout=3)
+                self.assertEqual((result.stdout, result.stderr, result.returncode),
+                                 (baseline.stdout, baseline.stderr, baseline.returncode))
+                self.assertEqual(len(self.receiver.spans()), before + allowed)
+                if not allowed:
+                    record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                    self.assertEqual(record["reason"], "endpoint")
 
     def test_allowlisted_export_failures_and_disabled_preserve_exit(self):
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector.example:4318"

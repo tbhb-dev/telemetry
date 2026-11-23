@@ -120,9 +120,10 @@ class _Pending:
             allowed = host == "localhost" or ipaddress.ip_address(host).is_loopback
         except ValueError:
             allowed = False
-        hosts = [entry.strip().lower() for entry in os.getenv("TBHB_TELEMETRY_ALLOW_HOSTS", "").split(",")]
+        raw_hosts = os.getenv("TBHB_TELEMETRY_ALLOW_HOSTS", "")
+        hosts = [entry.strip().lower() for entry in (raw_hosts if len(raw_hosts) <= 4096 else "").split(",")]
         hosts = [entry for entry in hosts if 0 < len(entry) <= 253][:8]
-        allowed = allowed or (host is not None and host.lower() in hosts)
+        allowed = allowed or host in hosts
         if not allowed:
             _counter(len(self.spans), "endpoint")
             return
@@ -148,7 +149,7 @@ def _export(spans, endpoint):
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import encode_spans
     url = urlsplit(endpoint)
     connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(
-        url.hostname, url.port, timeout=0.25)
+        url.hostname, url.port if url.port is not None else (443 if url.scheme == "https" else 80), timeout=0.25)
     try:
         connection.request("POST", url.path.rstrip("/") + "/v1/traces",
                            encode_spans(spans).SerializeToString(), {"Content-Type": "application/x-protobuf"})

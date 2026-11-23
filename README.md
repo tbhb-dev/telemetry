@@ -29,6 +29,7 @@ loopback interface at port 4318. Set
 turn off telemetry. Set `TBHB_TELEMETRY_ALLOW_HOSTS` to a comma-separated list of
 exact host names, such as `collector.example`, to allow exports to those hosts.
 The default allows only loopback endpoints.
+Listed hosts use whatever scheme the endpoint names, so prefer `https`.
 The package buffers 512 spans and waits up to 250 ms for its single export
 attempt. Drop records and the locked counter live under
 `$XDG_STATE_HOME/tbhb/telemetry` (default `~/.local/state`).
