@@ -36,8 +36,9 @@ defect that reached review in this repository.
 - The smoke test installs the built wheel into a fresh environment and proves a
   real export, not just an import.
 - A rerun of the release job for the same sha doesn't duplicate the release.
-  Known open until the follow-up lands: a rerun checks asset names only, not
-  the wheel or sidecar bytes.
+  Known open on `main` before the follow-up merged: a rerun of an already
+  published release checked asset names only, not the wheel or sidecar bytes.
+  A draft rerun uploads both files again.
 - The wheel's name, URL pattern and hash sidecar still match the README
   contract that consumers pin.
 - Known open: the CI setup action can download Bazelisk without a checksum
@@ -47,5 +48,8 @@ defect that reached review in this repository.
 
 - No secret, host name, private repository name, internal path, network name or
   address appears in any file, commit or PR text.
-- A change to `.github/actionlint.yaml` is a byte copy of the rules baseline at
-  the commit pinned in `MODULE.bazel`.
+- `.github/actionlint.yaml` should be a byte copy of the rules baseline at the
+  commit pinned in `MODULE.bazel`. Known open: until the baseline-copy change
+  merges, the checked-in file has `labels: []` and the baseline lists the
+  `ubuntu-26.04` and `ubuntu-26.04-arm` labels. Compare against the baseline,
+  not against the current file.
