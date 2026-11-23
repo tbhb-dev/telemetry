@@ -51,7 +51,8 @@ def _counter(delta=0, reason=None):
             count = 0
         if reason:
             with (directory / "drops.jsonl").open("a") as log:
-                log.write(json.dumps(dict(timestamp=time.time(), count=delta, reason=reason)) + "\n")
+                if os.stat(log.fileno()).st_size < 1024 * 1024:
+                    log.write(json.dumps(dict(timestamp=time.time(), count=delta, reason=reason)) + "\n")
         with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
             path = Path(temporary.name)
             try:

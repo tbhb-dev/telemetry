@@ -25,8 +25,8 @@ defect that reached review in this repository.
   Values are strings of at most 128 characters, and outcome is `ok`, `refused`
   or `failed`. Spans also carry built-in attributes that this limit doesn't
   cover.
-- Known open: `drops.jsonl` has no file size limit, so repeated refused exports
-  grow it. A change must not add new unbounded writes.
+- `drops.jsonl` stops accepting new records once it reaches 1 MiB. Keep new
+  writes bounded.
 
 ## Release and CI
 
