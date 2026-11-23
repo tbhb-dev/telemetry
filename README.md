@@ -43,6 +43,16 @@ uv pip compile python/pyproject.toml --generate-hashes --python-version 3.12 --i
 bazelisk mod deps --lockfile_mode=update
 ```
 
+## Release wheel
+
+Each merge to `main` publishes one GitHub release tagged `sha-<12 hex>` (the
+first 12 characters of the merge commit) holding the wheel and its `.sha256`
+sidecar. Every merge keeps its own CI run, so no merge is skipped, but releases
+can finish in any order and none is marked latest: pin the tag you want.
+tools pins the wheel by https URL and hash, for example
+`https://github.com/tbhb-dev/telemetry/releases/download/sha-<12 hex>/tbhb_telemetry-0-py3-none-any.whl`.
+The file name never changes; the tag carries the version.
+
 ## Contributing
 
 Changes land by pull request into `main`. Each pull request needs one approving
