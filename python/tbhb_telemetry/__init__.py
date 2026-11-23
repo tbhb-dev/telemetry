@@ -120,6 +120,9 @@ class _Pending:
             allowed = host == "localhost" or ipaddress.ip_address(host).is_loopback
         except ValueError:
             allowed = False
+        hosts = [entry.strip().lower() for entry in os.getenv("TBHB_TELEMETRY_ALLOW_HOSTS", "").split(",")]
+        hosts = [entry for entry in hosts if 0 < len(entry) <= 253][:8]
+        allowed = allowed or (host is not None and host.lower() in hosts)
         if not allowed:
             _counter(len(self.spans), "endpoint")
             return

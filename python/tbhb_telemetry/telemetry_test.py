@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -28,6 +29,7 @@ class TelemetryTest(unittest.TestCase):
             "TRACEPARENT": "00-" + "a" * 32 + "-" + "b" * 16 + "-01", "TRACESTATE": "vendor=value"})
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        os.environ.pop("TBHB_TELEMETRY_ALLOW_HOSTS", None)
         self.receiver = Receiver()
         self.addCleanup(self.receiver.close)
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = self.receiver.endpoint
@@ -216,7 +218,7 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual((len(lines), json.loads(lines[0])["count"]), (1, 1))
 
     def test_endpoint_exporter_disabled_and_capacity(self):
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://example.invalid:4318"
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector.example:4318"
         with patch.object(telemetry, "_export") as export:
             self.assertEqual(self.run_command(), 0)
             export.assert_not_called()
@@ -235,6 +237,70 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(self.run_command(main), 0)
         self.assertEqual(len(self.receiver.spans()), 512)
         self.assertEqual(json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])["count"], 9)
+
+    def test_endpoint_allowlist(self):
+        entries = ["collector%d.example" % index for index in range(9)]
+        longest = "a" * 245 + ".example"
+        for allowlist, host, allowed in (
+            (None, "collector.example", False),
+            ("", "collector.example", False),
+            ("collector.example", "collector.example", True),
+            ("other.example", "collector.example", False),
+            ("COLLECTOR.EXAMPLE", "collector.example", True),
+            ("collector.example", "COLLECTOR.EXAMPLE", True),
+            (" , , collector.example, , ", "collector.example", True),
+            ("*", "collector.example", False),
+            (".example.net", "collector.example.net", False),
+            ("collector.example", "other.collector.example", False),
+            (",".join(entries), entries[7], True),
+            (",".join(entries), entries[8], False),
+            (longest, longest, True),
+            ("a" + longest, "a" + longest, False),
+            ("a" * 254 + ",collector.example", "collector.example", True),
+            ("other.example", "localhost", True),
+        ):
+            with self.subTest(allowlist=allowlist, host=host):
+                if allowlist is None:
+                    os.environ.pop("TBHB_TELEMETRY_ALLOW_HOSTS", None)
+                else:
+                    os.environ["TBHB_TELEMETRY_ALLOW_HOSTS"] = allowlist
+                endpoint = "http://%s:4318" % host
+                os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
+                with patch.object(telemetry, "_export") as export:
+                    self.assertEqual(self.run_command(lambda: 7), 7)
+                    if allowed:
+                        export.assert_called_once_with(unittest.mock.ANY, endpoint)
+                        self.assertEqual(len(export.call_args.args[0]), 1)
+                    else:
+                        export.assert_not_called()
+                        record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                        self.assertEqual((record["reason"], record["count"]), ("endpoint", 1))
+
+    def test_allowlisted_export_failures_and_disabled_preserve_exit(self):
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector.example:4318"
+        os.environ["TBHB_TELEMETRY_ALLOW_HOSTS"] = "collector.example"
+        with patch.object(telemetry, "_export", side_effect=RuntimeError) as export:
+            self.assertEqual(self.run_command(lambda: 6), 6)
+            export.assert_called_once()
+        self.assertEqual(json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])["reason"], "export")
+        release, finished = threading.Event(), threading.Event()
+        def stalled_export(spans, endpoint):
+            release.wait(3)
+            finished.set()
+        try:
+            with patch.object(telemetry, "_export", side_effect=stalled_export) as export:
+                start = time.monotonic()
+                self.assertEqual(self.run_command(lambda: 4), 4)
+                self.assertLess(time.monotonic() - start, 0.35)
+                export.assert_called_once()
+            self.assertEqual(json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])["reason"], "timeout")
+        finally:
+            release.set()
+            self.assertTrue(finished.wait(1))
+        os.environ["OTEL_SDK_DISABLED"] = "true"
+        with patch.object(telemetry, "_export") as export:
+            self.assertEqual(self.run_command(lambda: 5), 5)
+            export.assert_not_called()
 
 
 if __name__ == "__main__":
