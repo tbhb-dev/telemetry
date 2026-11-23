@@ -209,10 +209,11 @@ jobs:
 
   # The only job with write access: one GitHub release per merge, tagged
   # `sha-<12 hex>`, with the wheel and its sha256 sidecar. Runs for different
-  # merges can finish in any order, so no release is marked latest. The release
-  # is created as a draft with both files and published last, so a rerun after
-  # an interrupted run finds either nothing, a draft to finish, or a published
-  # release to verify.
+  # merges can finish in any order. New releases aren't marked latest, and an
+  # older release may still carry the mark. Pin the sha tag and never use
+  # releases/latest. The job creates a draft with both files before publishing,
+  # so a rerun finds either nothing, a draft to finish, or a published release
+  # to verify.
   release:
     name: release
     needs: [wheel]
@@ -237,6 +238,24 @@ jobs:
           tag="sha-${SHA:0:12}"
           wheel=tbhb_telemetry-0-py3-none-any.whl
           sidecar="$wheel.sha256"
+
+          verify_tag() {
+            local commit
+            if ! commit=$(gh api "repos/$GH_REPO/commits/tags/$tag" --jq .sha 2>&1); then
+              # Publishing creates the tag if the draft has no tag yet.
+              if [ "${1:-}" = draft ] && [[ "$commit" == *"No commit found for SHA: tags/$tag (HTTP 422)"* ]]; then
+                return 0
+              fi
+              printf '%s\n' "$commit" >&2
+              echo "::error::could not resolve tag $tag to a commit"
+              return 1
+            fi
+            if [ "$commit" != "$SHA" ]; then
+              echo "::error::tag $tag points to $commit, expected $SHA"
+              return 1
+            fi
+          }
+
           # `gh release view` does not reliably see drafts; the list does.
           found=$(gh api --paginate "repos/$GH_REPO/releases" \
             --jq ".[] | select(.tag_name == \"$tag\") | {draft, target: .target_commitish, assets: [.assets[].name]}" \
@@ -246,6 +265,7 @@ jobs:
             gh release create "$tag" "dist/$wheel" "dist/$sidecar" --draft --target "$SHA" --latest=false \
               --title "$tag" --notes "Merge of $SHA on main."
             gh release edit "$tag" --draft=false --latest=false
+            verify_tag
             exit 0
           fi
           if [ "$count" -ne 1 ]; then
@@ -259,19 +279,14 @@ jobs:
           fi
           draft=$(jq '.[0].draft' <<<"$found")
           if [ "$draft" = true ]; then
+            verify_tag draft
             echo "release $tag is an unpublished draft: finishing it"
             gh release upload "$tag" "dist/$wheel" "dist/$sidecar" --clobber
             gh release edit "$tag" --draft=false --latest=false
+            verify_tag
             exit 0
           fi
-          if ! commit=$(gh api "repos/$GH_REPO/commits/tags/$tag" --jq '.sha'); then
-            echo "::error::could not resolve published tag $tag to a commit"
-            exit 1
-          fi
-          if [ "$commit" != "$SHA" ]; then
-            echo "::error::published tag $tag points to $commit, expected $SHA"
-            exit 1
-          fi
+          verify_tag
           for name in "$wheel" "$sidecar"; do
             if ! jq --exit-status --arg name "$name" '.[0].assets | index($name)' <<<"$found" >/dev/null; then
               echo "::error::published release $tag has no asset $name"
@@ -279,7 +294,10 @@ jobs:
             fi
           done
           published=$(mktemp -d)
-          gh release download "$tag" --pattern "$wheel" --pattern "$sidecar" --dir "$published"
+          if ! gh release download "$tag" --pattern "$wheel" --pattern "$sidecar" --dir "$published"; then
+            echo "::error::could not download $wheel and $sidecar from release $tag"
+            exit 1
+          fi
           published_sum=$(cd "$published" && sha256sum "$wheel")
           sidecar_sum=$(cat "$published/$sidecar")
           if [ "$published_sum" != "$sidecar_sum" ]; then
