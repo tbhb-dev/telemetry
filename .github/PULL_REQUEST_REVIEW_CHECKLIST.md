@@ -48,7 +48,8 @@ defect that reached review in this repository.
 - No secret, host name, private repository name, internal path, network name or
   address appears in any file, commit or PR text.
 - `.github/actionlint.yaml` should be a byte copy of the rules baseline at the
-  commit pinned in `MODULE.bazel`. Known open: until the baseline-copy change
-  merges, the checked-in file has `labels: []` and the baseline lists the
-  `ubuntu-26.04` and `ubuntu-26.04-arm` labels. Compare against the baseline,
-  not against the current file.
+  commit pinned in `MODULE.bazel`. The checked-in file has `labels: []`.
+  The shared baseline lists `ubuntu-26.04` and `ubuntu-26.04-arm`. Its comment
+  explains why actionlint 1.7.12 needs them and when to remove them. The rules
+  repository's own `.github/actionlint.yaml` at that commit also lists
+  `xcode-27` and extends the comment to identify it as a GitHub-hosted preview.
