@@ -45,10 +45,13 @@ bazelisk mod deps --lockfile_mode=update
 
 ## Release wheel
 
-Each merge to `main` publishes one GitHub release tagged `sha-<12 hex>` (the
-first 12 characters of the merge commit) holding the wheel and its `.sha256`
-sidecar. Every merge keeps its own CI run, so no merge is skipped, but releases
-can finish in any order and none is marked latest: pin the tag you want.
+CI publishes one GitHub release per merge to `main`, unless a concurrent
+workflow change blocks it. A merge that changes `.github/workflows/` can stop
+an earlier run that is still building from creating its release. The next
+merge publishes its own release. Each release holds the wheel and its `.sha256`
+sidecar and uses the tag `sha-<12 hex>` (the first 12 characters of the merge
+commit). Releases can finish in any order and none is marked latest. Pin the
+tag you want.
 tools pins the wheel by https URL and hash, for example
 `https://github.com/tbhb-dev/telemetry/releases/download/sha-<12 hex>/tbhb_telemetry-0-py3-none-any.whl`.
 The file name never changes; the tag carries the version.

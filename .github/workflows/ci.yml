@@ -243,9 +243,9 @@ jobs:
             | jq --slurp '.')
           count=$(jq 'length' <<<"$found")
           if [ "$count" -eq 0 ]; then
-            gh release create "$tag" "dist/$wheel" "dist/$sidecar" --draft --target "$SHA" \
+            gh release create "$tag" "dist/$wheel" "dist/$sidecar" --draft --target "$SHA" --latest=false \
               --title "$tag" --notes "Merge of $SHA on main."
-            gh release edit "$tag" --draft=false
+            gh release edit "$tag" --draft=false --latest=false
             exit 0
           fi
           if [ "$count" -ne 1 ]; then
@@ -261,8 +261,16 @@ jobs:
           if [ "$draft" = true ]; then
             echo "release $tag is an unpublished draft: finishing it"
             gh release upload "$tag" "dist/$wheel" "dist/$sidecar" --clobber
-            gh release edit "$tag" --draft=false
+            gh release edit "$tag" --draft=false --latest=false
             exit 0
+          fi
+          if ! commit=$(gh api "repos/$GH_REPO/commits/tags/$tag" --jq '.sha'); then
+            echo "::error::could not resolve published tag $tag to a commit"
+            exit 1
+          fi
+          if [ "$commit" != "$SHA" ]; then
+            echo "::error::published tag $tag points to $commit, expected $SHA"
+            exit 1
           fi
           for name in "$wheel" "$sidecar"; do
             if ! jq --exit-status --arg name "$name" '.[0].assets | index($name)' <<<"$found" >/dev/null; then
@@ -270,4 +278,17 @@ jobs:
               exit 1
             fi
           done
-          echo "release $tag is published, targets $SHA and has both files"
+          published=$(mktemp -d)
+          gh release download "$tag" --pattern "$wheel" --pattern "$sidecar" --dir "$published"
+          published_sum=$(cd "$published" && sha256sum "$wheel")
+          sidecar_sum=$(cat "$published/$sidecar")
+          if [ "$published_sum" != "$sidecar_sum" ]; then
+            echo "::error::published wheel $wheel does not match its SHA-256 sidecar"
+            exit 1
+          fi
+          local_sum=$(cd dist && sha256sum "$wheel")
+          if [ "$published_sum" != "$local_sum" ]; then
+            echo "::error::published wheel $wheel does not match the SHA-256 of this run's wheel"
+            exit 1
+          fi
+          echo "release $tag is published, points to $SHA and matches this run's wheel"
