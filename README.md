@@ -61,6 +61,12 @@ uv pip compile python/pyproject.toml --generate-hashes --python-version 3.12 --i
 bazelisk mod deps --lockfile_mode=update
 ```
 
+## Dashboard
+
+[Agents (live)](dashboards/agents-live.json) reads per-launch spans named `tbhbdev alpha agent exec` from the Tempo data source (UID `tempo`).
+It shows launches with host, harness, model, profile, outcome, run ID, and duration, plus launch counts by outcome and by host.
+Import the JSON through the Grafana API or UI. The dashboard stays empty until a launcher exports spans.
+
 ## Release wheel
 
 CI groups pushes to `main` by commit SHA, so each merge keeps its own run and

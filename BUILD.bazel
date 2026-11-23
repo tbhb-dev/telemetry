@@ -105,6 +105,7 @@ repo_layout_test(
         ".github",
         ".vale",
         "LICENSES",
+        "dashboards",
         "python",
     ],
 )

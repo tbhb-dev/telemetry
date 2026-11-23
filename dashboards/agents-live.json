@@ -1,0 +1,100 @@
+{
+  "uid": "agents-live-launches",
+  "title": "Agents (live)",
+  "tags": [
+    "agents",
+    "telemetry"
+  ],
+  "timezone": "utc",
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Launches (host, harness, model, profile, outcome, duration)",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "refId": "A",
+          "query": "{ name = \"tbhbdev alpha agent exec\" } | select(span.tbhb.agent.host, span.tbhb.agent.harness, span.tbhb.agent.model, span.tbhb.agent.profile, span.tbhb.agent.outcome, span.tbhb.run.id)",
+          "queryType": "traceql",
+          "tableType": "spans",
+          "limit": 100,
+          "spss": 1
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Launches by outcome",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "refId": "A",
+          "query": "{ name = \"tbhbdev alpha agent exec\" } | count_over_time() by (span.tbhb.agent.outcome)",
+          "queryType": "traceql",
+          "metricsQueryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Launches by host",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "refId": "A",
+          "query": "{ name = \"tbhbdev alpha agent exec\" } | count_over_time() by (span.tbhb.agent.host)",
+          "queryType": "traceql",
+          "metricsQueryType": "range"
+        }
+      ]
+    }
+  ]
+}
