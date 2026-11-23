@@ -36,9 +36,8 @@ defect that reached review in this repository.
 - The smoke test installs the built wheel into a fresh environment and proves a
   real export, not just an import.
 - A rerun of the release job for the same sha doesn't duplicate the release.
-  Known open on `main` before the follow-up merged: a rerun of an already
-  published release checked asset names only, not the wheel or sidecar bytes.
-  A draft rerun uploads both files again.
+  A rerun of an already published release compares the tag's commit and the
+  wheel's bytes with the sidecar and the rebuilt wheel. Keep those checks.
 - The wheel's name, URL pattern and hash sidecar still match the README
   contract that consumers pin.
 - Known open: the CI setup action can download Bazelisk without a checksum
