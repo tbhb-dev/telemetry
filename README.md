@@ -30,6 +30,20 @@ turn off telemetry. Set `TBHB_TELEMETRY_ALLOW_HOSTS` to a comma-separated list o
 exact host names, such as `collector.example`, to allow exports to those hosts.
 The default allows only loopback endpoints.
 Listed hosts use whatever scheme the endpoint names, so prefer `https`.
+
+## Decision: default endpoint
+
+Decided 2026-11-22 by the telemetry owner.
+
+- The library default stays loopback at port 4318 and the library never discovers
+  an endpoint. A default that reaches off-host would send spans where nobody chose.
+- The caller picks any other collector with `OTEL_EXPORTER_OTLP_ENDPOINT` and
+  `TBHB_TELEMETRY_ALLOW_HOSTS`. Commands that need a private collector resolve its
+  host name at run time from the host's own network status. Names stay out of
+  this repository, its commits and its pull requests.
+- Where no loopback collector runs, the operator sets both variables. Plain
+  `http` inside the private network is accepted and tracked as security debt.
+- To undo: remove the allowlist variable and spans go back to loopback only.
 The package buffers 512 spans and waits up to 250 ms for its single export
 attempt. Drop records and the locked counter live under
 `$XDG_STATE_HOME/tbhb/telemetry` (default `~/.local/state`).
