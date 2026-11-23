@@ -30,10 +30,12 @@ turn off telemetry. The package buffers 512 spans and waits up to 250 ms for its
 single export attempt. Drop records and the locked counter live under
 `$XDG_STATE_HOME/tbhb/telemetry` (default `~/.local/state`).
 
+The installable Python package requires Python 3.12 or newer. Its dependency
+pins live in `python/pyproject.toml`, which also supplies the Bazel lock input.
 Regenerate the Python dependency lock with:
 
 ```sh
-uv pip compile python/requirements.in --generate-hashes --python-version 3.12 --index-url https://pypi.org/simple --output-file python/requirements.lock
+uv pip compile python/pyproject.toml --generate-hashes --python-version 3.12 --index-url https://pypi.org/simple --output-file python/requirements.lock
 bazelisk mod deps --lockfile_mode=update
 ```
 

@@ -1,0 +1,16 @@
+[project]
+name = "tbhb-telemetry"
+version = "0"
+requires-python = ">=3.12"
+dependencies = [
+  "opentelemetry-exporter-otlp-proto-http==1.45.2",
+  "opentelemetry-sdk==1.45.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+wheel-exclude = ["tbhb_telemetry/receiver.py", "tbhb_telemetry/telemetry_test.py"]

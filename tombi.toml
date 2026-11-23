@@ -16,6 +16,8 @@ toml-version = "v1.0.0"
 # repo that forgets to gitignore one of them. Every entry is intentional (an
 # undocumented ignore is a review defect).
 exclude = [
+  # The embedded pyproject schema cannot resolve its uv reference offline.
+  "python/pyproject.toml",
   ".venv/**/*.toml",
   "tmp/**/*.toml",
   "bazel-*/**/*.toml",
