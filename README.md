@@ -49,6 +49,8 @@ Decided 2026-11-22 by the telemetry owner.
 The package buffers 512 spans and waits up to 250 ms for its single export
 attempt. Drop records and the locked counter live under
 `$XDG_STATE_HOME/tbhb/telemetry` (default `~/.local/state`).
+Once `drops.jsonl` reaches 1 MiB, the library skips further appends and keeps
+updating the counter.
 
 The installable Python package requires Python 3.12 or newer. Its dependency
 pins live in `python/pyproject.toml`, which also supplies the Bazel lock input.

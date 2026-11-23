@@ -165,6 +165,22 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual((self.drops() / "drops.count").read_text(), "5")
         self.assertEqual({p.name for p in self.drops().iterdir()}, {"drops.count", "drops.lock"})
 
+    def test_drop_log_stops_appending_at_size_limit(self):
+        self.drops().mkdir(parents=True)
+        log = self.drops() / "drops.jsonl"
+        at_limit = b"{}".ljust(1024 * 1024 - 1) + b"\n"
+        log.write_bytes(at_limit)
+        self.assertEqual(telemetry._counter(1, "endpoint"), 0)
+        self.assertEqual(log.read_bytes(), at_limit)
+
+        below_limit = at_limit[:-2] + b"\n"
+        log.write_bytes(below_limit)
+        self.assertEqual(telemetry._counter(1, "endpoint"), 1)
+        with log.open("rb") as records:
+            self.assertEqual(records.readline(), below_limit)
+            appended, = records
+        self.assertEqual(json.loads(appended)["reason"], "endpoint")
+
     def test_empty_state_home_uses_home(self):
         working = Path(self.directory.name) / "working"
         working.mkdir()
