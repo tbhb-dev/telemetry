@@ -58,9 +58,10 @@ The package buffers 512 spans and waits up to 250 ms for its single export
 attempt. Drop records and the locked counter live under
 `$XDG_STATE_HOME/tbhb/telemetry` (default `~/.local/state`).
 Each drop record contains `timestamp`, `count`, `reason`, `run_id`, and
-`endpoint`. The last two fields contain the latest run ID set in the process
-and the export destination's host and port, respectively. Each is limited to
-128 characters and is `null` when unavailable.
+`endpoint`. The `run_id` field contains the latest run ID of at most 128
+characters set for the command. The `endpoint` field contains the export
+destination's host and port, limited to 128 characters. Each field is `null`
+when unavailable.
 Once `drops.jsonl` reaches 1 MiB, the library skips further appends and keeps
 updating the counter.
 
