@@ -4,6 +4,7 @@ import contextlib
 import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+from ipaddress import IPv6Address
 import json
 import os
 from pathlib import Path
@@ -252,13 +253,23 @@ class TelemetryTest(unittest.TestCase):
 
     def test_malformed_endpoint_drop_context(self):
         telemetry.set_attributes(**{"tbhb.run.id": "malformed"})
+        log = self.drops() / "drops.jsonl"
         for endpoint in ("http://[example.invalid", "http://example.invalid:invalid", "http:///path"):
             with self.subTest(endpoint=endpoint):
+                before = len(log.read_text().splitlines()) if log.exists() else 0
                 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
                 self.assertEqual(self.run_command(lambda: 4), 4)
-                record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                appended = log.read_text().splitlines()[before:]
+                self.assertEqual(len(appended), 1)
+                record = json.loads(appended[0])
                 self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
                                  ("endpoint", "malformed", None))
+
+    def test_ipv6_drop_context(self):
+        authority = f"[{IPv6Address(1)}]:4318"
+        telemetry._counter(1, "endpoint", telemetry.urlsplit(f"http://{authority}"))
+        line, = (self.drops() / "drops.jsonl").read_text().splitlines()
+        self.assertEqual(json.loads(line)["endpoint"], authority)
 
     def test_stalled(self):
         stalled = Receiver(stalled=True)
@@ -329,7 +340,9 @@ class TelemetryTest(unittest.TestCase):
                 trace.get_tracer("test").start_span("child").end()
         self.assertEqual(self.run_command(main), 0)
         self.assertEqual(len(self.receiver.spans()), 512)
-        self.assertEqual(json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])["count"], 9)
+        record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+        self.assertEqual((record["reason"], record["count"], record["endpoint"]),
+                         ("capacity", 9, self.receiver.endpoint.removeprefix("http://")))
 
     def test_endpoint_allowlist(self):
         entries = ["collector%d.example" % index for index in range(9)]
@@ -463,7 +476,8 @@ class TelemetryTest(unittest.TestCase):
                                      ("endpoint", None, "example.invalid:80"))
 
     def test_allowlisted_export_failures_and_disabled_preserve_exit(self):
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector.example:4318"
+        endpoint = "http://collector.example:4318"
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
         os.environ["TBHB_TELEMETRY_ALLOW_HOSTS"] = "collector.example"
         with patch.object(telemetry, "_export", side_effect=RuntimeError) as export:
             self.assertEqual(self.run_command(lambda: 6), 6)
@@ -479,7 +493,9 @@ class TelemetryTest(unittest.TestCase):
                 self.assertEqual(self.run_command(lambda: 4), 4)
                 self.assertLess(time.monotonic() - start, 0.35)
                 export.assert_called_once()
-            self.assertEqual(json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])["reason"], "timeout")
+            record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+            self.assertEqual((record["reason"], record["endpoint"]),
+                             ("timeout", endpoint.removeprefix("http://")))
         finally:
             release.set()
             self.assertTrue(finished.wait(1))
