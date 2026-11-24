@@ -24,6 +24,7 @@ import tbhb_telemetry as telemetry
 
 class TelemetryTest(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(telemetry, "_run_id", None))
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.environment = patch.dict(os.environ, {
@@ -200,14 +201,22 @@ class TelemetryTest(unittest.TestCase):
         self.run_command()  # Warm SDK imports before measuring transport overhead.
         with socket.socket() as reserved:
             reserved.bind(("localhost", 0))
-            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:%d" % reserved.getsockname()[1]
+            authority = "%s:%d" % ("localhost", reserved.getsockname()[1])
+            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://" + authority
+            def main():
+                telemetry.set_attributes(**{"tbhb.run.id": "closed-port"})
+                print("command")
+                return 3
             output, errors = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
                 start = time.monotonic()
-                self.assertEqual(self.run_command(lambda: (print("command"), 3)[1]), 3)
+                self.assertEqual(self.run_command(main), 3)
                 elapsed = time.monotonic() - start
             self.assertEqual((output.getvalue(), errors.getvalue()), ("command\n", ""))
-            self.assertEqual(len((self.drops() / "drops.jsonl").read_text().splitlines()), 1)
+            line, = (self.drops() / "drops.jsonl").read_text().splitlines()
+            record = json.loads(line)
+            self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
+                             ("export", "closed-port", authority))
             print("closed-port overhead: %.2f ms" % (elapsed * 1000))
             self.assertLess(elapsed, 0.1)
             result = subprocess.run([sys.executable, "-c",
@@ -222,6 +231,34 @@ class TelemetryTest(unittest.TestCase):
                   for s in self.receiver.spans()]
         self.assertEqual(counts, [0, 3, 0])
         self.assertEqual((self.drops() / "drops.count").read_text(), "0")
+
+    def test_refused_endpoint_drop_context(self):
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://user@example.invalid/path?key=value"
+        run_id = "run-" + "a" * 130
+        def main():
+            telemetry.set_attributes(**{"tbhb.run.id": "previous"})
+            telemetry.set_attributes(**{"tbhb.run.id": run_id})
+        with patch.object(telemetry, "_export") as export:
+            self.assertEqual(self.run_command(main), 0)
+            host = ".".join(("a" * 60, "b" * 60, "c" * 20, "example.invalid"))
+            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://{host}:4318"
+            self.assertEqual(self.run_command(), 0)
+            export.assert_not_called()
+        first, second = map(json.loads, (self.drops() / "drops.jsonl").read_text().splitlines())
+        self.assertEqual((first["reason"], first["run_id"], first["endpoint"]),
+                         ("endpoint", run_id[:128], "example.invalid:443"))
+        self.assertEqual((second["reason"], second["run_id"], second["endpoint"]),
+                         ("endpoint", run_id[:128], host[:123] + ":4318"))
+
+    def test_malformed_endpoint_drop_context(self):
+        telemetry.set_attributes(**{"tbhb.run.id": "malformed"})
+        for endpoint in ("http://[example.invalid", "http://example.invalid:invalid", "http:///path"):
+            with self.subTest(endpoint=endpoint):
+                os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
+                self.assertEqual(self.run_command(lambda: 4), 4)
+                record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
+                                 ("endpoint", "malformed", None))
 
     def test_stalled(self):
         stalled = Receiver(stalled=True)
@@ -411,7 +448,7 @@ class TelemetryTest(unittest.TestCase):
                   '    print("command error", file=sys.stderr)\n    return 7\n')
         baseline = subprocess.run([sys.executable, "-c", script + "sys.exit(main())"],
                                   capture_output=True, timeout=3)
-        for endpoint, allowed in (("http://collector.example", False), (self.receiver.endpoint, True)):
+        for endpoint, allowed in (("http://example.invalid", False), (self.receiver.endpoint, True)):
             with self.subTest(allowed=allowed):
                 before = len(self.receiver.spans())
                 result = subprocess.run([sys.executable, "-c", script +
@@ -422,7 +459,8 @@ class TelemetryTest(unittest.TestCase):
                 self.assertEqual(len(self.receiver.spans()), before + allowed)
                 if not allowed:
                     record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
-                    self.assertEqual(record["reason"], "endpoint")
+                    self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
+                                     ("endpoint", None, "example.invalid:80"))
 
     def test_allowlisted_export_failures_and_disabled_preserve_exit(self):
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector.example:4318"
