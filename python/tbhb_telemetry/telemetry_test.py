@@ -233,6 +233,35 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(counts, [0, 3, 0])
         self.assertEqual((self.drops() / "drops.count").read_text(), "0")
 
+    def test_run_id_is_cleared_between_commands(self):
+        def main():
+            telemetry.set_attributes(**{"tbhb.run.id": "first-run"})
+            raise SystemExit(1)
+
+        with patch.object(telemetry, "_export", side_effect=RuntimeError):
+            with self.assertRaises(SystemExit):
+                self.run_command(main)
+            self.assertEqual(self.run_command(), 0)
+
+        records = (self.drops() / "drops.jsonl").read_text().splitlines()
+        self.assertEqual([json.loads(line)["run_id"] for line in records], ["first-run", None])
+
+    def test_run_id_limit_matches_span_and_drop_record(self):
+        for size in (129, 128):
+            with self.subTest(size=size):
+                run_id = "a" * size
+                with patch.object(telemetry, "_export", side_effect=RuntimeError) as export:
+                    self.run_command(lambda: telemetry.set_attributes(**{"tbhb.run.id": run_id}))
+                export.assert_called_once()
+                root, = export.call_args.args[0]
+                record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                if size == 128:
+                    self.assertEqual(root.attributes["tbhb.run.id"], run_id)
+                    self.assertEqual(record["run_id"], run_id)
+                else:
+                    self.assertNotIn("tbhb.run.id", root.attributes)
+                    self.assertIsNone(record["run_id"])
+
     def test_refused_endpoint_drop_context(self):
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://user@example.invalid/path?key=value"
         run_id = "run-" + "a" * 130
@@ -247,18 +276,21 @@ class TelemetryTest(unittest.TestCase):
             export.assert_not_called()
         first, second = map(json.loads, (self.drops() / "drops.jsonl").read_text().splitlines())
         self.assertEqual((first["reason"], first["run_id"], first["endpoint"]),
-                         ("endpoint", run_id[:128], "example.invalid:443"))
+                         ("endpoint", "previous", "example.invalid:443"))
         self.assertEqual((second["reason"], second["run_id"], second["endpoint"]),
-                         ("endpoint", run_id[:128], host[:123] + ":4318"))
+                         ("endpoint", None, host[:123] + ":4318"))
 
     def test_malformed_endpoint_drop_context(self):
-        telemetry.set_attributes(**{"tbhb.run.id": "malformed"})
+        def main():
+            telemetry.set_attributes(**{"tbhb.run.id": "malformed"})
+            return 4
+
         log = self.drops() / "drops.jsonl"
         for endpoint in ("http://[example.invalid", "http://example.invalid:invalid", "http:///path"):
             with self.subTest(endpoint=endpoint):
                 before = len(log.read_text().splitlines()) if log.exists() else 0
                 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
-                self.assertEqual(self.run_command(lambda: 4), 4)
+                self.assertEqual(self.run_command(main), 4)
                 appended = log.read_text().splitlines()[before:]
                 self.assertEqual(len(appended), 1)
                 record = json.loads(appended[0])

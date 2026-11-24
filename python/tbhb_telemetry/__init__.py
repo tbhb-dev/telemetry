@@ -247,8 +247,8 @@ def materialize():
 def set_attributes(**kwargs):
     global _run_id
     run_id = kwargs.get("tbhb.run.id")
-    if isinstance(run_id, str):
-        _run_id = run_id[:128]
+    if isinstance(run_id, str) and len(run_id) <= 128:
+        _run_id = run_id
     if _state:
         for key, value in kwargs.items():
             if key in _KEYS and isinstance(value, str) and len(value) <= 128:
@@ -261,7 +261,7 @@ def set_attributes(**kwargs):
 
 def command(name, *, version, main):
     """Run main, preserving its result, output and exceptions."""
-    global _state
+    global _state, _run_id
     _setup(name, version)
     code, error = 0, None
     try:
@@ -280,4 +280,6 @@ def command(name, *, version, main):
                 _state.finish(0 if code is None else code, error)
         except Exception:
             pass
-        _state = None
+        finally:
+            _state = None
+            _run_id = None
