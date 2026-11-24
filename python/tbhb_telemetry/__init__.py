@@ -14,8 +14,8 @@ from urllib.parse import urlsplit
 
 _state = None
 _installed = False
+_run_id = None
 _KEYS = {"tbhb.agent." + key for key in ("host", "harness", "model", "profile", "outcome")}
-_KEYS.add("tbhb.run.id")
 
 
 def _quiet(function):
@@ -28,8 +28,25 @@ def _quiet(function):
     return wrapped
 
 
+def _endpoint_port(url):
+    port = url.port
+    return port if port is not None else (443 if url.scheme == "https" else 80)
+
+
+def _drop_endpoint(endpoint):
+    try:
+        url = urlsplit(endpoint or "")
+        host = url.hostname
+        if not host:
+            return None
+        authority = f"[{host}]" if ":" in host else host
+        return f"{authority}:{_endpoint_port(url)}"[:128]
+    except (ValueError, KeyboardInterrupt):
+        return None
+
+
 @_quiet
-def _counter(delta=0, reason=None):
+def _counter(delta=0, reason=None, *, endpoint=None):
     import fcntl
     directory = Path(os.getenv("XDG_STATE_HOME") or Path.home() / ".local/state") / "tbhb/telemetry"
     directory.mkdir(parents=True, exist_ok=True)
@@ -52,7 +69,8 @@ def _counter(delta=0, reason=None):
         if reason:
             with (directory / "drops.jsonl").open("a") as log:
                 if os.stat(log.fileno()).st_size < 1024 * 1024:
-                    log.write(json.dumps(dict(timestamp=time.time(), count=delta, reason=reason)) + "\n")
+                    log.write(json.dumps(dict(timestamp=time.time(), count=delta, reason=reason,
+                                               run_id=_run_id, endpoint=_drop_endpoint(endpoint))) + "\n")
         with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
             path = Path(temporary.name)
             try:
@@ -113,11 +131,12 @@ class _Pending:
             self.root.set_status(trace.StatusCode.ERROR)
         self.root.end()
         context.detach(self.token)
-        if self.lost:
-            _counter(self.lost, "capacity")
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://%s:4318" % ipaddress.ip_address(0x7F000001))
-        host = urlsplit(endpoint).hostname
+        if self.lost:
+            _counter(self.lost, "capacity", endpoint=endpoint)
+        host = None
         try:
+            host = urlsplit(endpoint).hostname
             allowed = host == "localhost" or ipaddress.ip_address(host).is_loopback
         except ValueError:
             allowed = False
@@ -126,7 +145,7 @@ class _Pending:
         hosts = [entry for entry in hosts if 0 < len(entry) <= 253][:8]
         allowed = allowed or host in hosts
         if not allowed:
-            _counter(len(self.spans), "endpoint")
+            _counter(len(self.spans), "endpoint", endpoint=endpoint)
             return
         done, result = threading.Event(), []
         def send():
@@ -143,9 +162,9 @@ class _Pending:
         except KeyboardInterrupt:
             return
         if not completed:
-            _counter(len(self.spans), "timeout")
+            _counter(len(self.spans), "timeout", endpoint=endpoint)
         elif not result[0]:
-            _counter(len(self.spans), "export")
+            _counter(len(self.spans), "export", endpoint=endpoint)
         else:
             _counter(-self.attributes["tbhb.export.dropped"])
 
@@ -154,7 +173,7 @@ def _export(spans, endpoint):
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import encode_spans
     url = urlsplit(endpoint)
     connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(
-        url.hostname, url.port if url.port is not None else (443 if url.scheme == "https" else 80), timeout=0.25)
+        url.hostname, _endpoint_port(url), timeout=0.25)
     try:
         connection.request("POST", url.path.rstrip("/") + "/v1/traces",
                            encode_spans(spans).SerializeToString(), {"Content-Type": "application/x-protobuf"})
@@ -220,6 +239,10 @@ def materialize():
 
 @_quiet
 def set_attributes(**kwargs):
+    global _run_id
+    run_id = kwargs.get("tbhb.run.id")
+    if isinstance(run_id, str):
+        _run_id = run_id[:128]
     if _state:
         for key, value in kwargs.items():
             if key in _KEYS and isinstance(value, str) and len(value) <= 128:

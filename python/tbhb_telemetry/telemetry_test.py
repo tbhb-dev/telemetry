@@ -26,6 +26,9 @@ class TelemetryTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
+        run_id = patch.object(telemetry, "_run_id", None)
+        run_id.start()
+        self.addCleanup(run_id.stop)
         self.environment = patch.dict(os.environ, {
             "XDG_STATE_HOME": self.directory.name, "OTEL_SDK_DISABLED": "false",
             "TRACEPARENT": "00-" + "a" * 32 + "-" + "b" * 16 + "-01", "TRACESTATE": "vendor=value"})
@@ -50,6 +53,7 @@ class TelemetryTest(unittest.TestCase):
                 ("host", "harness", "model", "profile", "outcome")}, "tbhb.run.id": "run", "unknown": "ignored"})
             with trace.get_tracer("test").start_as_current_span("child") as child:
                 self.assertEqual(child.parent, telemetry.materialize())
+                telemetry.set_attributes(**{"tbhb.run.id": "updated"})
             return 7
         self.assertEqual(self.run_command(main), 7)
         child, root = self.receiver.spans()
@@ -60,9 +64,9 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(attrs["process.exit.code"].int_value, 7)
         for key, value in {"process.executable.name": "sample", "service.name": "sample",
             "service.version": "1.2.3", "tbhb.cli.command": "sample agent", "error.type": "SystemExit",
-            **{"tbhb.agent." + k: "ok" for k in ("host", "harness", "model", "profile", "outcome")},
-            "tbhb.run.id": "run"}.items():
+            **{"tbhb.agent." + k: "ok" for k in ("host", "harness", "model", "profile", "outcome")}}.items():
             self.assertEqual(attrs[key].string_value, value)
+        self.assertNotIn("tbhb.run.id", attrs)
         self.assertNotIn("unknown", attrs)
         self.assertEqual(root.status.code, 2)
 
@@ -198,23 +202,37 @@ class TelemetryTest(unittest.TestCase):
 
     def test_failures_and_recovery(self):
         self.run_command()  # Warm SDK imports before measuring transport overhead.
+        def main():
+            telemetry.set_attributes(**{"tbhb.run.id": "sample-run"})
+            print("command")
+            return 3
+        host = telemetry.urlsplit(self.receiver.endpoint).hostname
         with socket.socket() as reserved:
-            reserved.bind(("localhost", 0))
-            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:%d" % reserved.getsockname()[1]
-            output, errors = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-                start = time.monotonic()
-                self.assertEqual(self.run_command(lambda: (print("command"), 3)[1]), 3)
-                elapsed = time.monotonic() - start
-            self.assertEqual((output.getvalue(), errors.getvalue()), ("command\n", ""))
-            self.assertEqual(len((self.drops() / "drops.jsonl").read_text().splitlines()), 1)
-            print("closed-port overhead: %.2f ms" % (elapsed * 1000))
-            self.assertLess(elapsed, 0.1)
-            result = subprocess.run([sys.executable, "-c",
-                'from tbhb_telemetry import command; raise SystemExit(command("sample", version="1", main=lambda: 0))'],
-                capture_output=True, timeout=3)
-            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
-            self.run_command()
+            reserved.bind((host, 0))
+            authority = f"{host}:{reserved.getsockname()[1]}"
+        # A bound socket without a listener can stall on macOS.
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://{authority}"
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            start = time.monotonic()
+            self.assertEqual(self.run_command(main), 3)
+            elapsed = time.monotonic() - start
+        self.assertEqual((output.getvalue(), errors.getvalue()), ("command\n", ""))
+        log = self.drops() / "drops.jsonl"
+        line, = log.read_text().splitlines()
+        record = json.loads(line)
+        self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
+                         ("export", "sample-run", authority))
+        print("closed-port overhead: %.2f ms" % (elapsed * 1000))
+        self.assertLess(elapsed, 0.1)
+        result = subprocess.run([sys.executable, "-c",
+            'from tbhb_telemetry import command; raise SystemExit(command("sample", version="1", main=lambda: 0))'],
+            capture_output=True, timeout=3)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
+        self.run_command()
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([(record["run_id"], record["endpoint"]) for record in records],
+                         [("sample-run", authority), (None, authority), ("sample-run", authority)])
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = self.receiver.endpoint
         self.run_command()
         self.run_command()
@@ -293,6 +311,35 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(self.run_command(main), 0)
         self.assertEqual(len(self.receiver.spans()), 512)
         self.assertEqual(json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])["count"], 9)
+
+    def test_refused_endpoint_drop_context(self):
+        host = ("a" * 63 + ".") * 2 + "example.invalid"
+        run_id = "r" * 129
+        def main():
+            telemetry.set_attributes(**{"tbhb.run.id": "first"})
+            telemetry.set_attributes(**{"tbhb.run.id": run_id})
+            return 7
+        for url, authority in (
+            ("https://user@EXAMPLE.INVALID/path?marker=value#fragment", "example.invalid:443"),
+            (f"http://{host}:4318", f"{host}:4318"[:128]),
+        ):
+            with self.subTest(url=url), patch.object(telemetry, "_export") as export:
+                os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = url
+                self.assertEqual(self.run_command(main), 7)
+                export.assert_not_called()
+                record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
+                                 ("endpoint", run_id[:128], authority))
+
+    def test_malformed_endpoint_drop_without_run_id(self):
+        for url in ("http://[broken", "http://example.invalid:broken", "http:///path"):
+            with self.subTest(url=url), patch.object(telemetry, "_export") as export:
+                os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = url
+                self.assertEqual(self.run_command(lambda: 7), 7)
+                export.assert_not_called()
+                record = json.loads((self.drops() / "drops.jsonl").read_text().splitlines()[-1])
+                self.assertEqual((record["reason"], record["run_id"], record["endpoint"]),
+                                 ("endpoint", None, None))
 
     def test_endpoint_allowlist(self):
         entries = ["collector%d.example" % index for index in range(9)]
