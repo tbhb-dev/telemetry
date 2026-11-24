@@ -21,7 +21,7 @@ use_repo(pip, "python_deps")
 bazel_dep(name = "tbhb_rules", version = "0.0.0", dev_dependency = True)
 git_override(
     module_name = "tbhb_rules",
-    commit = "5f66bbd282e07b5ea1b9bbb51464dee92c3cc2c9",
+    commit = "b625589aa7417e706445072dc63b9bcfecf30070",
     remote = "https://github.com/tbhb-dev/rules.git",
 )
 
