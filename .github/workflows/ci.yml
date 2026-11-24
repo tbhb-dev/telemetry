@@ -46,7 +46,7 @@ jobs:
       - name: Set up Bazel for CI
         uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@b625589aa7417e706445072dc63b9bcfecf30070  # main
         with:
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
+          disk-cache: ${{ github.workflow }}-ubuntu-26.04
           cache-save: ${{ github.event_name != 'pull_request' }}
 
       # //... covers the @tbhb_rules lint, format, shell and docs tests over
@@ -76,7 +76,7 @@ jobs:
       pull-requests: read  # Lowest open PR, for the bootstrap size exemption.
     uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@b625589aa7417e706445072dc63b9bcfecf30070  # main
     with:
-      runs-on: ubuntu-24.04
+      runs-on: ubuntu-26.04
       timeout-minutes: 10
       pip-audit-target: ""
       module-dirs: .

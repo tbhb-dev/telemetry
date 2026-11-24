@@ -17,5 +17,5 @@ jobs:
     # yamllint disable-line rule:line-length
     uses: tbhb-dev/renovate-config/.github/workflows/renovate-config-validator.yaml@e1a65634da8cdfd89662af277f258134dfa6cc8c  # main
     with:
-      runs_on: ubuntu-24.04
+      runs_on: ubuntu-26.04
       configs: .github/renovate.json5
